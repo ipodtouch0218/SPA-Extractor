@@ -1,24 +1,20 @@
 import sys
 import os
-from PIL import Image
+import argparse
+from PIL import Image, ImageOps
 
-def spa_extract():
-    args = sys.argv
-    if len(args) < 2:
-        print('Please specify the .spa file to extract.\nExample usage: ' + args[0] + ' spl.spa')
-        return 1
+
+def extract_file(file_path, output_folder, apply_mirroring):
+    f = open(file_path, 'rb')
     
-    try:
-        f = open(args[1], 'rb')
-    except:
-        print('Failed to open file. Does it exist?')
-        return 2
-
-    if f.read(4) != b' APS':
-        print('Failed to read .spa header. Is this file truly a .spa?')
-        return 3
+    header = f.read(4)
+    if header != b' APS':
+        raise ValueError('Missing SPA file header')
             
     version = f.read(4)
+    if version != b'22_1':
+        raise ValueError('Unsupported SPA file version')
+    
     particles = int.from_bytes(f.read(2), byteorder='little')
     textures = int.from_bytes(f.read(2), byteorder='little')
     _ = f.read(4) # padding
@@ -27,10 +23,9 @@ def spa_extract():
     texture_block_offset = int.from_bytes(f.read(4), byteorder='little')
     _ = f.read(4) # padding
     
-    print(f'Found {particles} particle(s), {textures} textures.')
-    
+    folder = output_folder + '/' + '.'.join(file_path.split('.')[:-1])
     try:
-        os.mkdir('.'.join(args[1].split('.')[:-1]))
+        os.makedirs(folder, exist_ok=True)
     except:
         pass
     
@@ -43,10 +38,10 @@ def spa_extract():
         texture_format = texture_info & 0xF
         width = 8 << ((texture_info >> 4) & 0xF)
         height = 8 << ((texture_info >> 8) & 0xF)
-        repeat_s = (texture_info & (1 << 12)) == 1
-        repeat_t = (texture_info & (1 << 13)) == 1
-        mirror_s = (texture_info & (1 << 14)) == 1
-        mirror_t = (texture_info & (1 << 15)) == 1
+        repeat_s = (texture_info & (1 << 12)) != 0
+        repeat_t = (texture_info & (1 << 13)) != 0
+        mirror_s = (texture_info & (1 << 14)) != 0
+        mirror_t = (texture_info & (1 << 15)) != 0
         
         color_zero_transparent = int.from_bytes(f.read(2), byteorder='little') != 0
         texture_data_length = int.from_bytes(f.read(4), byteorder='little')
@@ -58,7 +53,7 @@ def spa_extract():
         
         texture_data = f.read(texture_data_length)
         palette_data = f.read(palette_data_length)
-        f.read(four_by_four_data_length)
+        _ = f.read(four_by_four_data_length)
         
         image = Image.new('RGBA', (width, height), (0,0,0,0))
         pixels = image.load()
@@ -150,14 +145,64 @@ def spa_extract():
         
         particle_number += 1
         
-        image.save('.'.join(args[1].split('.')[:-1]) + '/particle-' + str(particle_number) + '.png')
+        if apply_mirroring:
+            if mirror_s:
+                tmp = Image.new('RGBA', (image.width * 2, image.height))
+                tmp.paste(image, (0,0))
+                tmp.paste(ImageOps.mirror(image), (image.width, 0))
+                image = tmp
+            if mirror_t:
+                tmp = Image.new('RGBA', (image.width, image.height * 2))
+                tmp.paste(image, (0,0))
+                tmp.paste(ImageOps.flip(image), (0, image.height))
+                image = tmp
         
-    # print(byte)
+        image.save(f'{folder}/particle-{particle_number}.png')
+        
     f.close()
     
-    print(f'Exported {particle_number} particles.')
+    return particle_number
+
+
+def print_extract_file(file_path, output_folder, apply_mirroring):
+    try:
+        result = extract_file(file_path, output_folder, apply_mirroring)
+        print(f'{file_path}: Extracted {result} textures')
+        return result
+    except ValueError as ve:
+        print(f'{file_path}: Failed to parse. {ve}')
+        return 0
+
+
+def spa_extract():
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input_file')
+    parser.add_argument('-o', '--output', dest='output_folder', help='Output folder to place all exported textures within', default='.')
+    parser.add_argument('-m', '--apply-mirroring', dest='apply_mirroring', help='Outputs textures with their mirroring, when applicable.', action='store_true')
+    args = parser.parse_args()
+    
+    total = 0
+    
+    if os.path.isfile(args.input_file):
+        total += print_extract_file(args.input_file, args.output_folder, args.apply_mirroring)
+       
+    elif os.path.isdir(args.input_file):
+        files = [f for f in os.listdir(args.input_file) if os.path.isfile(args.input_file + '/' + f) and f.lower().endswith('.spa')]
+        if len(files) <= 0:
+            print('The folder you provided does not contain any .spa files.')
+            return 1
+        
+        for file in files:
+            total += print_extract_file(file, args.output_folder, args.apply_mirroring)
+   
+    else:
+        print('Failed to locate the provided file. Does it exist?')
+        return 2
+            
+    print(f'Complete. Successfully extracted {total} textures')
     return 0
     
-
+    
 if __name__ == "__main__":
 	exit(spa_extract())
